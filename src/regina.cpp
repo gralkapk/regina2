@@ -1,13 +1,24 @@
+#include <vector>
+
 #include "dr_api.h"
 
 #include "drmgr.h"
 
 #include "log.h"
+#include "trace_ref_t.h"
 
 
 // Forward declarations
 static void event_exit(void);
+static void event_thread_init(void *drcontext);
+static void event_thread_exit(void *drcontext);
 //---------------------
+
+
+// Global variables
+static int tls_index;
+static std::vector<std::vector<trace_ref_t>> trace_storage;
+//-----------------
 
 /*
  * dr_client_main
@@ -28,6 +39,17 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
     // Register events
     dr_register_exit_event(event_exit);
+    if (!drmgr_register_thread_init_event(event_thread_init) ||
+        !drmgr_register_thread_exit_event(event_thread_exit)) {
+        REGINA_LOG_ERROR("Unable to register drmgr events\n");
+        return;
+    }
+
+    tls_index = drmgr_register_tls_field();
+    if (tls_index == -1) {
+        REGINA_LOG_ERROR("No TLS fields available\n");
+        return;
+    }
 
     // Notify dr log of this client
     dr_log(NULL, LOG_ALL, 1, "Client 'regina' is running\n");
@@ -39,6 +61,28 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
  * event_exit
  */
 static void event_exit(void) {
+    // Unregister events
+    if (!drmgr_unregister_thread_init_event(event_thread_init) ||
+        !drmgr_unregister_thread_exit_event(event_thread_exit)) {
+        REGINA_LOG_ERROR("Unable to unregister drmgr events\n");
+    }
+
     // Exit extensions
     drmgr_exit();
+}
+
+
+/*
+ * event_thread_init
+ */
+static void event_thread_init(void *drcontext) {
+
+}
+
+
+/*
+ * event_thread_exit
+ */
+static void event_thread_exit(void *drcontext) {
+
 }

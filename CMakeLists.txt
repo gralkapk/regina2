@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.4)
 
 project(regina)
 
-set(HEADERS src/log.h)
+set(HEADERS src/log.h src/per_thread_t.h src/trace_ref_t.h)
 set(SOURCES src/regina.cpp)
 
 add_library(regina SHARED ${SOURCES} ${HEADERS})
