@@ -6,6 +6,7 @@
 #include "drmgr.h"
 #include "drreg.h"
 #include "drutil.h"
+#include "drsyms.h"
 
 #include "log.h"
 #include "per_thread_t.h"
@@ -87,6 +88,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
         //REGINA_LOG_ERROR("Failed to initialize drmgr\n");
         return;
     }
+    
 
     // Register events
     dr_register_exit_event(event_exit);
@@ -94,7 +96,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
         !drmgr_register_thread_exit_event(event_thread_exit) ||
         !drmgr_register_bb_app2app_event(event_bb_app2app, &priority) ||
         !drmgr_register_bb_instrumentation_event(NULL, event_app_instruction, &priority) ||
-        drreg_init(&ops) != DRREG_SUCCESS) {
+        drreg_init(&ops) != DRREG_SUCCESS ||
+        drsym_init(NULL) != DRSYM_SUCCESS) {
         //REGINA_LOG_ERROR("Unable to register drmgr events\n");
         DR_ASSERT(false);
         return;
@@ -174,6 +177,44 @@ static void event_thread_exit(void *drcontext) {
 //static void cb_mem_ref(void *drcontext, instr_t *where, int pos, bool is_write);
 //------------------------------
 
+#define MAX_SYM_RESULT 256
+static void
+print_address(FILE *f, app_pc addr, const char *prefix) {
+    drsym_error_t symres;
+    drsym_info_t sym;
+    char name[MAX_SYM_RESULT];
+    char file[MAXIMUM_PATH];
+    module_data_t *data;
+    data = dr_lookup_module(addr);
+    if (data == NULL) {
+        fprintf(f, "%s %p ? ??:0\n", prefix, addr);
+        return;
+    }
+    sym.struct_size = sizeof(sym);
+    sym.name = name;
+    sym.name_size = MAX_SYM_RESULT;
+    sym.file = file;
+    sym.file_size = MAXIMUM_PATH;
+    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
+        DRSYM_DEFAULT_FLAGS);
+    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+        const char *modname = dr_module_preferred_name(data);
+        if (modname == NULL)
+            modname = "<noname>";
+        fprintf(f, "%s %p %s!%s+%p", prefix, addr,
+            modname, sym.name, addr - data->start - sym.start_offs);
+        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+            fprintf(f, " ??:0\n");
+        } else {
+            fprintf(f, " %s:%d + %d\n",
+                sym.file, sym.line, sym.line_offs);
+        }
+    } else
+        dr_fprintf(f, "%s %p ? ??:0\n", prefix, addr);
+    dr_free_module_data(data);
+}
+
+
 static dr_mcontext_t mc;
 /*
 * cb_mem_ref
@@ -188,12 +229,17 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
         for (int i = 0; i < trace_storage[data->thread_idx].size(); i++) {
             trace_ref_t &tmp = trace_storage[data->thread_idx][i];
             if (tmp.is_mem_ref) {
-                fprintf(data->f, "mem %p\n", tmp.instr_addr);
+                //fprintf(data->f, "mem %p\n", tmp.instr_addr);
+                print_address(data->f, tmp.instr_addr, "\t\t mem @ ");
             } else {
                 if (tmp.is_call) {
-                    fprintf(data->f, "call %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                    //fprintf(data->f, "call %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                    print_address(data->f, tmp.instr_addr, "call @ ");
+                    print_address(data->f, tmp.target_addr, "\t to ");
                 } else {
-                    fprintf(data->f, "return %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                    //fprintf(data->f, "return %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                    print_address(data->f, tmp.instr_addr, "return @ ");
+                    print_address(data->f, tmp.target_addr, "\t to ");
                 }
             }
         }
