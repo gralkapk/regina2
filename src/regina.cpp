@@ -186,7 +186,16 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
     if (trace_storage[data->thread_idx].size() > 1000) {
         // print out
         for (int i = 0; i < trace_storage[data->thread_idx].size(); i++) {
-            fprintf(data->f, "mem %p\n", trace_storage[data->thread_idx][i].instr_addr);
+            trace_ref_t &tmp = trace_storage[data->thread_idx][i];
+            if (tmp.is_mem_ref) {
+                fprintf(data->f, "mem %p\n", tmp.instr_addr);
+            } else {
+                if (tmp.is_call) {
+                    fprintf(data->f, "call %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                } else {
+                    fprintf(data->f, "return %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                }
+            }
         }
         trace_storage[data->thread_idx].clear();
     }
@@ -248,6 +257,48 @@ static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, 
 }
 
 
+static void at_call(app_pc instr_addr, app_pc target_addr) {
+    void *drcontext = dr_get_current_drcontext();
+    per_thread_t *data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
+
+    trace_ref_t trace;
+    trace.is_mem_ref = false;
+    trace.is_call = true;
+    trace.instr_addr = instr_addr;
+    trace.target_addr = target_addr;
+
+    trace_storage[data->thread_idx].push_back(trace);
+}
+
+
+static void at_call_ind(app_pc instr_addr, app_pc target_addr) {
+    void *drcontext = dr_get_current_drcontext();
+    per_thread_t *data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
+
+    trace_ref_t trace;
+    trace.is_mem_ref = false;
+    trace.is_call = true;
+    trace.instr_addr = instr_addr;
+    trace.target_addr = target_addr;
+
+    trace_storage[data->thread_idx].push_back(trace);
+}
+
+
+static void at_return(app_pc instr_addr, app_pc target_addr) {
+    void *drcontext = dr_get_current_drcontext();
+    per_thread_t *data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
+
+    trace_ref_t trace;
+    trace.is_mem_ref = false;
+    trace.is_call = false;
+    trace.instr_addr = instr_addr;
+    trace.target_addr = target_addr;
+
+    trace_storage[data->thread_idx].push_back(trace);
+}
+
+
 /*
  * event_app_instruction
  */
@@ -258,7 +309,7 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
     if (instr_get_app_pc(instr) == NULL)
         return DR_EMIT_DEFAULT;
 
-    /*if (instr_is_call_direct(instr)) {
+    if (instr_is_call_direct(instr)) {
         dr_insert_call_instrumentation(drcontext, bb, instr, (app_pc)at_call);
     } else if (instr_is_call_indirect(instr)) {
         dr_insert_mbr_instrumentation(drcontext, bb, instr, (app_pc)at_call_ind,
@@ -266,7 +317,7 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
     } else if (instr_is_return(instr)) {
         dr_insert_mbr_instrumentation(drcontext, bb, instr, (app_pc)at_return,
             SPILL_SLOT_1);
-    } else */if (instr_reads_memory(instr)) {
+    } else if (instr_reads_memory(instr)) {
         int opcode = instr_get_opcode(instr);
         if (std::strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
             for (int i = 0; i < instr_num_srcs(instr); i++) {

@@ -8,6 +8,7 @@
 typedef struct _trace_ref_t {
     bool is_mem_ref;
     bool write;
+    bool is_call;
     void *data_addr;
     size_t size;
     app_pc instr_addr;
