@@ -31,6 +31,7 @@ static int tls_index;
 static glb_trc_str trace_storage;
 static int thread_idx;
 static app_pc code_cache;
+static drsym_type_t *types;
 //-----------------
 
 
@@ -110,6 +111,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
 
     thread_idx = 0;
+
+    types = new drsym_type_t[3];
 
     code_cache_init();
 
@@ -215,6 +218,55 @@ print_address(FILE *f, app_pc addr, const char *prefix) {
 }
 
 
+static void
+print_data(void *drcontext, FILE *f, app_pc addr, void *data_addr, uint size, const char *prefix) {
+    drsym_error_t symres;
+    drsym_info_t sym;
+    char name[MAX_SYM_RESULT];
+    char buf[MAX_SYM_RESULT];
+    char file[MAXIMUM_PATH];
+    module_data_t *data;
+    data = dr_lookup_module(addr);
+    if (data == NULL) {
+        //fprintf(f, "%s %p ? ??:0\n", prefix, addr);
+        return;
+    }
+    sym.struct_size = sizeof(sym);
+    sym.name = name;
+    sym.name_size = MAX_SYM_RESULT;
+    sym.file = file;
+    sym.file_size = MAXIMUM_PATH;
+    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
+        DRSYM_DEFAULT_FLAGS);
+    if (symres == DRSYM_SUCCESS) {
+        //drsym_type_t *types = static_cast<drsym_type_t*>(dr_thread_alloc(drcontext, 3*sizeof(drsym_type_t)));
+        symres = drsym_expand_type(data->full_path, sym.type_id, 2, buf, MAX_SYM_RESULT, &types);
+        int i = 0;
+        int j = -1;
+        while (types[i].kind != DRSYM_TYPE_OTHER && i < 3) {
+            i++;
+            j++;
+        }
+        if (j >= 0) {
+            if (types[i].kind == DRSYM_TYPE_INT) {
+                fprintf(f, "%s INT %u %p\n", prefix, size, data_addr);
+            } else if (types[i].kind == DRSYM_TYPE_PTR) {
+                fprintf(f, "%s PTR %u %p\n", prefix, size, data_addr);
+            } else if (types[i].kind == DRSYM_TYPE_FUNC) {
+                fprintf(f, "%s FUNC %u %p\n", prefix, size, data_addr);
+            } else if (types[i].kind == DRSYM_TYPE_VOID) {
+                fprintf(f, "%s VOID %u %p\n", prefix, size, data_addr);
+            } else if (types[i].kind == DRSYM_TYPE_COMPOUND) {
+                fprintf(f, "%s COMPOUND %u %p\n", prefix, size, data_addr);
+            }
+        }
+        //dr_thread_free(drcontext, types, 3 * sizeof(drsym_type_t));
+    } else
+        fprintf(f, "%s ? %u %p\n", prefix, size, data_addr);
+    dr_free_module_data(data);
+}
+
+
 static dr_mcontext_t mc;
 /*
 * cb_mem_ref
@@ -230,7 +282,15 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
             trace_ref_t &tmp = trace_storage[data->thread_idx][i];
             if (tmp.is_mem_ref) {
                 //fprintf(data->f, "mem %p\n", tmp.instr_addr);
-                print_address(data->f, tmp.instr_addr, "\t\t mem @ ");
+                if (tmp.write) {
+                    print_address(data->f, tmp.instr_addr, "\t\t mem write @ ");
+                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");
+                    //fprintf(data->f, "\t\t\t %u %p\n", tmp.size, tmp.data_addr);
+                } else {
+                    print_address(data->f, tmp.instr_addr, "\t\t mem read @ ");
+                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");
+                    //fprintf(data->f, "\t\t\t %u %p\n", tmp.size, tmp.data_addr);
+                }
             } else {
                 if (tmp.is_call) {
                     //fprintf(data->f, "call %p to %p\n", tmp.instr_addr, tmp.target_addr);
@@ -248,6 +308,12 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
 
     trace_ref_t trace;
     trace.instr_addr = data->buf->instr_addr;
+    trace.data_addr = data->buf->data_addr;
+    trace.is_call = data->buf->is_call;
+    trace.is_mem_ref = data->buf->is_mem_ref;
+    trace.write = data->buf->write;
+    trace.size = data->buf->size;
+    trace.target_addr = data->buf->target_addr;
     trace_storage[data->thread_idx].push_back(trace);
     memset(data->buf, 0, sizeof(trace_ref_t));
 }
@@ -270,13 +336,45 @@ static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, 
     drvector_delete(&allowed);
 
     instr_t *instr, *restore;
-    opnd_t opnd1, opnd2;
+    opnd_t opnd1, opnd2, ref;
+
+    if (is_write) {
+        ref = instr_get_dst(where, pos);
+    } else {
+        ref = instr_get_src(where, pos);
+    }
+
+    drutil_insert_get_mem_addr(drcontext, ilist, where, ref, reg_tmp, reg_ptr);
 
     drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, reg_ptr);
-
+    // read tls field
     opnd1 = opnd_create_reg(reg_ptr);
     opnd2 = OPND_CREATE_MEMPTR(reg_ptr, offsetof(per_thread_t, buf));
     instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // store is_write
+    opnd1 = OPND_CREATE_MEM32(reg_ptr, offsetof(trace_ref_t, write));
+    opnd2 = OPND_CREATE_INT32(is_write);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // store is_mem_ref
+    opnd1 = OPND_CREATE_MEM32(reg_ptr, offsetof(trace_ref_t, is_mem_ref));
+    opnd2 = OPND_CREATE_INT32(true);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // store data addr
+    opnd1 = OPND_CREATE_MEMPTR(reg_ptr, offsetof(trace_ref_t, data_addr));
+    opnd2 = opnd_create_reg(reg_tmp);
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // store data size
+    opnd1 = OPND_CREATE_MEMPTR(reg_ptr, offsetof(trace_ref_t, size));
+    opnd2 = OPND_CREATE_INT32(drutil_opnd_mem_size_in_bytes(ref, where));
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
     instrlist_meta_preinsert(ilist, where, instr);
 
     // store pc

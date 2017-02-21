@@ -10,7 +10,7 @@ typedef struct _trace_ref_t {
     bool write;
     bool is_call;
     void *data_addr;
-    size_t size;
+    uint size;
     app_pc instr_addr;
     app_pc target_addr;
 } trace_ref_t;
