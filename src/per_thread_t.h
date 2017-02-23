@@ -4,11 +4,13 @@
 #include <stdio.h>
 
 #include "trace_ref_t.h"
+#include "fileio.h"
 
 typedef struct _per_thread_t {
     int thread_idx;
     trace_ref_t *buf;
     FILE *f;
+    FILE *fileIO;
 } per_thread_t;
 
 #endif

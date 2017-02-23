@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.4)
 
 project(regina)
 
-set(HEADERS src/log.h src/per_thread_t.h src/trace_ref_t.h)
-set(SOURCES src/regina.cpp)
+set(HEADERS src/log.h src/per_thread_t.h src/trace_ref_t.h src/fileio.h src/abstract_fileio.cpp)
+set(SOURCES src/regina.cpp src/fileio.cpp)
 
 add_library(regina SHARED ${SOURCES} ${HEADERS})
 

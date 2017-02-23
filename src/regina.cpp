@@ -1,4 +1,7 @@
 #include <vector>
+#include <iostream>
+#include <string>
+#include <sstream>
 #include <stdio.h>
 
 #include "dr_api.h"
@@ -11,6 +14,10 @@
 #include "log.h"
 #include "per_thread_t.h"
 #include "trace_ref_t.h"
+#include "fileio.h"
+
+
+#define MAX_TRACE_STORAGE_SIZE 1000
 
 
 // Forward declarations
@@ -33,6 +40,9 @@ static int thread_idx;
 static app_pc code_cache;
 static drsym_type_t *types;
 //-----------------
+typedef FileIO<true, false> _FileIO;
+
+static _FileIO filer;
 
 
 static void
@@ -63,6 +73,11 @@ code_cache_init(void) {
 }
 
 
+static void code_cache_exit(void) {
+    dr_nonheap_free(code_cache, dr_page_size());
+}
+
+
 /*
  * dr_client_main
  */
@@ -89,7 +104,6 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
         //REGINA_LOG_ERROR("Failed to initialize drmgr\n");
         return;
     }
-    
 
     // Register events
     dr_register_exit_event(event_exit);
@@ -126,6 +140,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
  * event_exit
  */
 static void event_exit(void) {
+    code_cache_exit();
+
     // Unregister events
     if (!drmgr_unregister_thread_init_event(event_thread_init) ||
         !drmgr_unregister_thread_exit_event(event_thread_exit) ||
@@ -134,6 +150,8 @@ static void event_exit(void) {
     }
 
     // Exit extensions
+    drreg_exit();
+    drsym_exit();
     drmgr_exit();
 }
 
@@ -157,6 +175,11 @@ static void event_thread_init(void *drcontext) {
     sprintf(filename, "regina.%d.log", thread_idx);
     data->f = fopen(filename, "w");
 
+    sprintf(filename, "regina.%d.bin", thread_idx);
+    data->fileIO = fopen(filename, "wb");
+    /*data->fileIO = static_cast<FileIO<true, true> *>(dr_thread_alloc(drcontext, sizeof(FileIO<true, true>)));
+    *(data->fileIO) = std::move(FileIO<true, true>(filename));*/
+
     thread_idx++;
 }
 
@@ -170,7 +193,9 @@ static void event_thread_exit(void *drcontext) {
 
     data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
     fclose(data->f);
+    fclose(data->fileIO);
 
+    //dr_thread_free(drcontext, data->fileIO, sizeof(FileIO<true, true>));
     dr_thread_free(drcontext, data->buf, sizeof(trace_ref_t));
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
@@ -218,6 +243,44 @@ print_address(FILE *f, app_pc addr, const char *prefix) {
 }
 
 
+static void translate_addr(app_pc addr, std::string &sym_string) {
+    std::ostringstream stringStream;
+    stringStream << std::hex;
+    drsym_error_t symres;
+    drsym_info_t sym;
+    char name[MAX_SYM_RESULT];
+    char file[MAXIMUM_PATH];
+    module_data_t *data;
+    data = dr_lookup_module(addr);
+    if (data == NULL) {
+        stringStream << "? ??:0";
+        sym_string = stringStream.str();
+        return;
+    }
+    sym.struct_size = sizeof(sym);
+    sym.name = name;
+    sym.name_size = MAX_SYM_RESULT;
+    sym.file = file;
+    sym.file_size = MAXIMUM_PATH;
+    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
+        DRSYM_DEFAULT_FLAGS);
+    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+        const char *modname = dr_module_preferred_name(data);
+        if (modname == NULL)
+            modname = "<noname>";
+        stringStream << modname << "!" << sym.name << "+" << addr - data->start - sym.start_offs;
+        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+            stringStream << " ??:0";
+        } else {
+            stringStream << " " << sym.file << ":" << std::dec << sym.line << "+" << sym.line_offs;
+        }
+    } else
+        stringStream << "? ??:0";
+    sym_string = stringStream.str();
+    dr_free_module_data(data);
+}
+
+
 static void
 print_data(void *drcontext, FILE *f, app_pc addr, void *data_addr, uint size, const char *prefix) {
     drsym_error_t symres;
@@ -228,7 +291,7 @@ print_data(void *drcontext, FILE *f, app_pc addr, void *data_addr, uint size, co
     module_data_t *data;
     data = dr_lookup_module(addr);
     if (data == NULL) {
-        //fprintf(f, "%s %p ? ??:0\n", prefix, addr);
+        fprintf(f, "%s ? %u %p\n", prefix, size, data_addr);
         return;
     }
     sym.struct_size = sizeof(sym);
@@ -276,50 +339,98 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
     per_thread_t *data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
 
     int thread_idx = data->thread_idx;
-    if (trace_storage[data->thread_idx].size() > 1000) {
+    if (trace_storage[data->thread_idx].size() > MAX_TRACE_STORAGE_SIZE) {
         // print out
         for (int i = 0; i < trace_storage[data->thread_idx].size(); i++) {
             trace_ref_t &tmp = trace_storage[data->thread_idx][i];
             if (tmp.is_mem_ref) {
                 //fprintf(data->f, "mem %p\n", tmp.instr_addr);
-                if (tmp.write) {
-                    print_address(data->f, tmp.instr_addr, "\t\t mem write @ ");
-                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");
+                if (tmp.is_write) {
+                    std::string str;
+                    _FileIO::MemRef_t mrt;
+                    mrt.is_write = true;
+                    mrt.instr = tmp.instr_addr;
+                    mrt.size = tmp.size;
+                    mrt.data = tmp.data_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    mrt.instrSym = str;
+                    filer.Print(data->fileIO, _FileIO::RefType::MemRef, &mrt);
+
+                    /*print_address(data->f, tmp.instr_addr, "\t\t mem write @ ");
+                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");*/
                     //fprintf(data->f, "\t\t\t %u %p\n", tmp.size, tmp.data_addr);
                 } else {
-                    print_address(data->f, tmp.instr_addr, "\t\t mem read @ ");
-                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");
+                    std::string str;
+                    _FileIO::MemRef_t mrt;
+                    mrt.is_write = false;
+                    mrt.instr = tmp.instr_addr;
+                    mrt.size = tmp.size;
+                    mrt.data = tmp.data_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    mrt.instrSym = str;
+                    filer.Print(data->fileIO, _FileIO::RefType::MemRef, &mrt);
+
+                    /*print_address(data->f, tmp.instr_addr, "\t\t mem read @ ");
+                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");*/
                     //fprintf(data->f, "\t\t\t %u %p\n", tmp.size, tmp.data_addr);
                 }
             } else {
                 if (tmp.is_call) {
+                    std::string str;
+
+                    _FileIO::CallRetRef_t crt;
+                    crt.instr = tmp.instr_addr;
+                    crt.target = tmp.target_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    crt.instrSym = str;
+                    translate_addr(tmp.target_addr, str);
+                    crt.targetSym = str;
+
+                    if (tmp.is_ind) {
+                        filer.Print(data->fileIO, _FileIO::RefType::CallIndRef, &crt);
+                    } else {
+                        filer.Print(data->fileIO, _FileIO::RefType::CallRef, &crt);
+                    }
+
                     //fprintf(data->f, "call %p to %p\n", tmp.instr_addr, tmp.target_addr);
-                    print_address(data->f, tmp.instr_addr, "call @ ");
-                    print_address(data->f, tmp.target_addr, "\t to ");
+                    /*print_address(data->f, tmp.instr_addr, "call @ ");
+                    print_address(data->f, tmp.target_addr, "\t to ");*/
                 } else {
+                    std::string str;
+
+                    _FileIO::CallRetRef_t crt;
+                    crt.instr = tmp.instr_addr;
+                    crt.target = tmp.target_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    crt.instrSym = str;
+                    translate_addr(tmp.target_addr, str);
+                    crt.targetSym = str;
+
+                    filer.Print(data->fileIO, _FileIO::RefType::RetRef, &crt);
+
                     //fprintf(data->f, "return %p to %p\n", tmp.instr_addr, tmp.target_addr);
-                    print_address(data->f, tmp.instr_addr, "return @ ");
-                    print_address(data->f, tmp.target_addr, "\t to ");
+                    /*print_address(data->f, tmp.instr_addr, "return @ ");
+                    print_address(data->f, tmp.target_addr, "\t to ");*/
                 }
             }
         }
         trace_storage[data->thread_idx].clear();
     }
 
-    trace_ref_t trace;
-    trace.instr_addr = data->buf->instr_addr;
+    //trace_ref_t trace(*(data->buf));
+    /*trace.instr_addr = data->buf->instr_addr;
     trace.data_addr = data->buf->data_addr;
     trace.is_call = data->buf->is_call;
     trace.is_mem_ref = data->buf->is_mem_ref;
-    trace.write = data->buf->write;
+    trace.is_write = data->buf->is_write;
     trace.size = data->buf->size;
-    trace.target_addr = data->buf->target_addr;
-    trace_storage[data->thread_idx].push_back(trace);
+    trace.target_addr = data->buf->target_addr;*/
+    trace_storage[data->thread_idx].push_back(trace_ref_t(*(data->buf)));
     memset(data->buf, 0, sizeof(trace_ref_t));
 }
 
 
-static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, bool is_write) {
+static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, bool iswrite) {
     drvector_t allowed;
 
     drreg_init_and_fill_vector(&allowed, false);
@@ -338,7 +449,7 @@ static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, 
     instr_t *instr, *restore;
     opnd_t opnd1, opnd2, ref;
 
-    if (is_write) {
+    if (iswrite) {
         ref = instr_get_dst(where, pos);
     } else {
         ref = instr_get_src(where, pos);
@@ -354,8 +465,8 @@ static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, 
     instrlist_meta_preinsert(ilist, where, instr);
 
     // store is_write
-    opnd1 = OPND_CREATE_MEM32(reg_ptr, offsetof(trace_ref_t, write));
-    opnd2 = OPND_CREATE_INT32(is_write);
+    opnd1 = OPND_CREATE_MEM32(reg_ptr, offsetof(trace_ref_t, is_write));
+    opnd2 = OPND_CREATE_INT32(iswrite);
     instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
     instrlist_meta_preinsert(ilist, where, instr);
 
@@ -408,6 +519,7 @@ static void at_call(app_pc instr_addr, app_pc target_addr) {
     trace_ref_t trace;
     trace.is_mem_ref = false;
     trace.is_call = true;
+    trace.is_ind = false;
     trace.instr_addr = instr_addr;
     trace.target_addr = target_addr;
 
@@ -422,6 +534,7 @@ static void at_call_ind(app_pc instr_addr, app_pc target_addr) {
     trace_ref_t trace;
     trace.is_mem_ref = false;
     trace.is_call = true;
+    trace.is_ind = true;
     trace.instr_addr = instr_addr;
     trace.target_addr = target_addr;
 
@@ -436,6 +549,7 @@ static void at_return(app_pc instr_addr, app_pc target_addr) {
     trace_ref_t trace;
     trace.is_mem_ref = false;
     trace.is_call = false;
+    trace.is_ind = false;
     trace.instr_addr = instr_addr;
     trace.target_addr = target_addr;
 
