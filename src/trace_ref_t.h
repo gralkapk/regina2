@@ -21,6 +21,7 @@ typedef struct _trace_ref_t {
         this->is_mem_ref = rhs.is_mem_ref;
         this->is_write = rhs.is_write;
         this->is_call = rhs.is_call;
+        this->is_ind = rhs.is_ind;
         this->data_addr = rhs.data_addr;
         this->size = rhs.size;
         this->instr_addr = rhs.instr_addr;
