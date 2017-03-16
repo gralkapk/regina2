@@ -16,10 +16,11 @@ public:
 
     typedef struct _MemRef_t {
         bool is_write;
-        unsigned int size;
+        unsigned char size;
         void *instr;
         void *data;
         std::string instrSym;
+        size_t symIdx;
     } MemRef_t;
 
     typedef struct _CallRetRef_t {
@@ -27,6 +28,8 @@ public:
         void *target;
         std::string instrSym;
         std::string targetSym;
+        size_t instrSymIdx;
+        size_t targetSymIdx;
     } CallRetRef_t;
 
     virtual ~AbstractFileIO(void) {

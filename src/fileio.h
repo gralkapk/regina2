@@ -47,12 +47,12 @@ public:
         return *this;
     }
 
-    void Print(FILE *const f, const AbstractFileIO<writeOnly, false>::RefType refType, const void *ref);
+    void Print(FILE *const f, const typename AbstractFileIO<writeOnly, false>::RefType refType, const void *ref);
 };
 
 
 template<bool writeOnly>
-inline void FileIO<writeOnly, false>::Print(FILE *const f, const AbstractFileIO<writeOnly, false>::RefType refType, const void *ref) {
+inline void FileIO<writeOnly, false>::Print(FILE *const f, const typename AbstractFileIO<writeOnly, false>::RefType refType, const void *ref) {
     if (refType == Super::RefType::MemRef) {
         const typename Super::MemRef_t *memRef = reinterpret_cast<const typename Super::MemRef_t *>(ref);
 
@@ -125,16 +125,16 @@ public:
         return *this;
     }
 
-    void Print(FILE *const f, const AbstractFileIO<writeOnly, true>::RefType refType, const void *ref);
+    void Print(FILE *const f, const typename AbstractFileIO<writeOnly, true>::RefType refType, const void *ref);
 };
 
 
 template<bool writeOnly>
-inline void FileIO<writeOnly, true>::Print(FILE *const f, const AbstractFileIO<writeOnly, true>::RefType refType, const void *ref) {
+inline void FileIO<writeOnly, true>::Print(FILE *const f, const typename AbstractFileIO<writeOnly, true>::RefType refType, const void *ref) {
     if (refType == Super::RefType::MemRef) {
         const typename Super::MemRef_t *memRef = reinterpret_cast<const typename Super::MemRef_t *>(ref);
 
-        std::fwrite(&refType, sizeof(AbstractFileIO<writeOnly, true>::RefType), 1, f);
+        /*std::fwrite(&refType, sizeof(AbstractFileIO<writeOnly, true>::RefType), 1, f);
         if (memRef->is_write) {
             bool tmp = true;
             std::fwrite(&tmp, sizeof(bool), 1, f);
@@ -144,24 +144,47 @@ inline void FileIO<writeOnly, true>::Print(FILE *const f, const AbstractFileIO<w
         }
         std::fwrite(&(memRef->instr), sizeof(size_t), 1, f);
         std::fwrite(&(memRef->size), sizeof(unsigned int), 1, f);
-        std::fwrite(&(memRef->data), sizeof(size_t), 1, f);
+        std::fwrite(&(memRef->data), sizeof(size_t), 1, f);*/
+
+        unsigned char type = 0; // type
+        std::fwrite(&type, sizeof(unsigned char), 1, f);
+        bool memType;
+        if (memRef->is_write) {
+            memType = true;
+        } else {
+            memType = false;
+        }
+        std::fwrite(&memType, sizeof(bool), 1, f);
+        std::fwrite(&(memRef->instr), sizeof(size_t), 1, f);
+        std::fwrite(&(memRef->size), sizeof(unsigned char), 1, f);
+        std::fwrite(&(memRef->symIdx), sizeof(size_t), 1, f);
 
     } else {
         const typename Super::CallRetRef_t *callRef = reinterpret_cast<const typename Super::CallRetRef_t *>(ref);
+
+        unsigned char type = 1; // type
+        std::fwrite(&type, sizeof(unsigned char), 1, f);
+
+        unsigned char subtype = 0;
         if (refType == Super::RefType::CallRef) {
-            typename Super::RefType tmp = Super::RefType::CallRef;
-            std::fwrite(&tmp, sizeof(char), 1, f);
+            /*typename Super::RefType tmp = Super::RefType::CallRef;
+            std::fwrite(&tmp, sizeof(char), 1, f);*/
+            subtype = 0;
         } else if (refType == Super::RefType::CallIndRef) {
-            typename Super::RefType tmp = Super::RefType::CallIndRef;
-            std::fwrite(&tmp, sizeof(char), 1, f);
+            /*typename Super::RefType tmp = Super::RefType::CallIndRef;
+            std::fwrite(&tmp, sizeof(char), 1, f);*/
+            subtype = 1;
         } else if (refType == Super::RefType::RetRef) {
-            typename Super::RefType tmp = Super::RefType::RetRef;
-            std::fwrite(&tmp, sizeof(char), 1, f);
+            /*typename Super::RefType tmp = Super::RefType::RetRef;
+            std::fwrite(&tmp, sizeof(char), 1, f);*/
+            subtype = 2;
         }
+        std::fwrite(&subtype, sizeof(unsigned char), 1, f);
+
         std::fwrite(&(callRef->instr), sizeof(size_t), 1, f);
         std::fwrite(&(callRef->target), sizeof(size_t), 1, f);
-        std::fwrite((callRef->instrSym.c_str()), std::strlen(callRef->instrSym.c_str()), 1, f);
-        std::fwrite((callRef->targetSym.c_str()), std::strlen(callRef->targetSym.c_str()), 1, f);
+        std::fwrite(&(callRef->instrSymIdx), sizeof(size_t), 1, f);
+        std::fwrite(&(callRef->targetSymIdx), sizeof(size_t), 1, f);
     }
 }
 

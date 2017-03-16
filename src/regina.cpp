@@ -2,7 +2,9 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-#include <stdio.h>
+#include <cstdio>
+#include <cstddef>
+#include <unordered_map>
 
 #include "dr_api.h"
 
@@ -17,7 +19,7 @@
 #include "fileio.h"
 
 
-#define MAX_TRACE_STORAGE_SIZE 1000
+#define MAX_TRACE_STORAGE_SIZE 100000
 
 
 // Forward declarations
@@ -30,6 +32,7 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
 static dr_emit_flags_t event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
     bool for_trace, bool translating);
 static void cb_mem_ref();
+static void translate_addr(app_pc addr, std::string &sym_string);
 //---------------------
 
 
@@ -39,8 +42,10 @@ static glb_trc_str trace_storage;
 static int thread_idx;
 static app_pc code_cache;
 static drsym_type_t *types;
+static std::unordered_map<std::string, size_t> symbol_lookup;
+static size_t symbol_idx;
 //-----------------
-typedef FileIO<true, false> _FileIO;
+typedef FileIO<true, true> _FileIO;
 
 static _FileIO filer;
 
@@ -126,6 +131,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
     thread_idx = 0;
 
+    symbol_idx = 0;
+
     types = new drsym_type_t[3];
 
     code_cache_init();
@@ -153,6 +160,13 @@ static void event_exit(void) {
     drreg_exit();
     drsym_exit();
     drmgr_exit();
+
+    FILE *lookupIO = std::fopen("regina.lookup.txt", "w");
+    for (auto &e : symbol_lookup) {
+        std::string tmp = std::to_string(e.second)+"#"+ e.first + "\n";
+        std::fwrite(tmp.c_str(), strlen(tmp.c_str()), 1, lookupIO);
+    }
+    std::fclose(lookupIO);
 }
 
 
@@ -175,7 +189,7 @@ static void event_thread_init(void *drcontext) {
     sprintf(filename, "regina.%d.log", thread_idx);
     data->f = fopen(filename, "w");
 
-    sprintf(filename, "regina.%d.bin", thread_idx);
+    sprintf(filename, "regina.%d.mmtrd", thread_idx);
     data->fileIO = fopen(filename, "wb");
     /*data->fileIO = static_cast<FileIO<true, true> *>(dr_thread_alloc(drcontext, sizeof(FileIO<true, true>)));
     *(data->fileIO) = std::move(FileIO<true, true>(filename));*/
@@ -192,6 +206,129 @@ static void event_thread_exit(void *drcontext) {
     per_thread_t *data;
 
     data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
+
+#if 1
+    if (!trace_storage[data->thread_idx].empty()) {
+        // print out
+        for (int i = 0; i < trace_storage[data->thread_idx].size(); i++) {
+            trace_ref_t &tmp = trace_storage[data->thread_idx][i];
+            if (tmp.is_mem_ref) {
+                //fprintf(data->f, "mem %p\n", tmp.instr_addr);
+                if (tmp.is_write) {
+                    std::string str;
+                    _FileIO::MemRef_t mrt;
+                    mrt.is_write = true;
+                    mrt.instr = tmp.instr_addr;
+                    mrt.size = tmp.size;
+                    mrt.data = tmp.data_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        mrt.symIdx = it->second;
+                    } else {
+                        mrt.symIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
+                    mrt.instrSym = str;
+                    filer.Print(data->fileIO, _FileIO::RefType::MemRef, &mrt);
+
+                    /*print_address(data->f, tmp.instr_addr, "\t\t mem write @ ");
+                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");*/
+                    //fprintf(data->f, "\t\t\t %u %p\n", tmp.size, tmp.data_addr);
+                } else {
+                    std::string str;
+                    _FileIO::MemRef_t mrt;
+                    mrt.is_write = false;
+                    mrt.instr = tmp.instr_addr;
+                    mrt.size = tmp.size;
+                    mrt.data = tmp.data_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        mrt.symIdx = it->second;
+                    } else {
+                        mrt.symIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
+                    mrt.instrSym = str;
+                    filer.Print(data->fileIO, _FileIO::RefType::MemRef, &mrt);
+
+                    /*print_address(data->f, tmp.instr_addr, "\t\t mem read @ ");
+                    print_data(drcontext, data->f, tmp.instr_addr, tmp.data_addr, tmp.size, "\t\t\t type ");*/
+                    //fprintf(data->f, "\t\t\t %u %p\n", tmp.size, tmp.data_addr);
+                }
+            } else {
+                if (tmp.is_call) {
+                    std::string str;
+
+                    _FileIO::CallRetRef_t crt;
+                    crt.instr = tmp.instr_addr;
+                    crt.target = tmp.target_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.instrSymIdx = it->second;
+                    } else {
+                        crt.instrSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
+                    crt.instrSym = str;
+                    translate_addr(tmp.target_addr, str);
+                    it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.targetSymIdx = it->second;
+                    } else {
+                        crt.targetSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
+                    crt.targetSym = str;
+
+                    if (tmp.is_ind) {
+                        filer.Print(data->fileIO, _FileIO::RefType::CallIndRef, &crt);
+                    } else {
+                        filer.Print(data->fileIO, _FileIO::RefType::CallRef, &crt);
+                    }
+
+                    //fprintf(data->f, "call %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                    /*print_address(data->f, tmp.instr_addr, "call @ ");
+                    print_address(data->f, tmp.target_addr, "\t to ");*/
+                } else {
+                    std::string str;
+
+                    _FileIO::CallRetRef_t crt;
+                    crt.instr = tmp.instr_addr;
+                    crt.target = tmp.target_addr;
+                    translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.instrSymIdx = it->second;
+                    } else {
+                        crt.instrSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
+                    crt.instrSym = str;
+                    translate_addr(tmp.target_addr, str);
+                    it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.targetSymIdx = it->second;
+                    } else {
+                        crt.targetSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
+                    crt.targetSym = str;
+
+                    filer.Print(data->fileIO, _FileIO::RefType::RetRef, &crt);
+
+                    //fprintf(data->f, "return %p to %p\n", tmp.instr_addr, tmp.target_addr);
+                    /*print_address(data->f, tmp.instr_addr, "return @ ");
+                    print_address(data->f, tmp.target_addr, "\t to ");*/
+                }
+            }
+        }
+        trace_storage[data->thread_idx].clear();
+    }
+#endif
+
     fclose(data->f);
     fclose(data->fileIO);
 
@@ -253,7 +390,7 @@ static void translate_addr(app_pc addr, std::string &sym_string) {
     module_data_t *data;
     data = dr_lookup_module(addr);
     if (data == NULL) {
-        stringStream << "? ??:0";
+        stringStream << "###";
         sym_string = stringStream.str();
         return;
     }
@@ -268,14 +405,14 @@ static void translate_addr(app_pc addr, std::string &sym_string) {
         const char *modname = dr_module_preferred_name(data);
         if (modname == NULL)
             modname = "<noname>";
-        stringStream << modname << "!" << sym.name << "+" << addr - data->start - sym.start_offs;
+        stringStream << modname << "#" << sym.name << "+" << addr - data->start - sym.start_offs;
         if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-            stringStream << " ??:0";
+            stringStream << "##";
         } else {
-            stringStream << " " << sym.file << ":" << std::dec << sym.line << "+" << sym.line_offs;
+            stringStream << "#" << sym.file << "#" << std::dec << sym.line << "+" << sym.line_offs;
         }
     } else
-        stringStream << "? ??:0";
+        stringStream << "###";
     sym_string = stringStream.str();
     dr_free_module_data(data);
 }
@@ -339,6 +476,7 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
     per_thread_t *data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
 
     int thread_idx = data->thread_idx;
+#if 1
     if (trace_storage[data->thread_idx].size() > MAX_TRACE_STORAGE_SIZE) {
         // print out
         for (int i = 0; i < trace_storage[data->thread_idx].size(); i++) {
@@ -353,6 +491,13 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
                     mrt.size = tmp.size;
                     mrt.data = tmp.data_addr;
                     translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        mrt.symIdx = it->second;
+                    } else {
+                        mrt.symIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
                     mrt.instrSym = str;
                     filer.Print(data->fileIO, _FileIO::RefType::MemRef, &mrt);
 
@@ -367,6 +512,13 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
                     mrt.size = tmp.size;
                     mrt.data = tmp.data_addr;
                     translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        mrt.symIdx = it->second;
+                    } else {
+                        mrt.symIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
                     mrt.instrSym = str;
                     filer.Print(data->fileIO, _FileIO::RefType::MemRef, &mrt);
 
@@ -382,8 +534,22 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
                     crt.instr = tmp.instr_addr;
                     crt.target = tmp.target_addr;
                     translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.instrSymIdx = it->second;
+                    } else {
+                        crt.instrSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
                     crt.instrSym = str;
                     translate_addr(tmp.target_addr, str);
+                    it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.targetSymIdx = it->second;
+                    } else {
+                        crt.targetSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
                     crt.targetSym = str;
 
                     if (tmp.is_ind) {
@@ -402,8 +568,22 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
                     crt.instr = tmp.instr_addr;
                     crt.target = tmp.target_addr;
                     translate_addr(tmp.instr_addr, str);
+                    auto it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.instrSymIdx = it->second;
+                    } else {
+                        crt.instrSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
                     crt.instrSym = str;
                     translate_addr(tmp.target_addr, str);
+                    it = symbol_lookup.find(str);
+                    if (it != symbol_lookup.end()) {
+                        crt.targetSymIdx = it->second;
+                    } else {
+                        crt.targetSymIdx = symbol_idx;
+                        symbol_lookup.insert(std::make_pair(str, symbol_idx++));
+                    }
                     crt.targetSym = str;
 
                     filer.Print(data->fileIO, _FileIO::RefType::RetRef, &crt);
@@ -416,6 +596,7 @@ static void cb_mem_ref(/*instr_t *where, int pos, bool is_write*/) {
         }
         trace_storage[data->thread_idx].clear();
     }
+#endif
 
     //trace_ref_t trace(*(data->buf));
     /*trace.instr_addr = data->buf->instr_addr;
