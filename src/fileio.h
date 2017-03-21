@@ -148,14 +148,14 @@ inline void FileIO<writeOnly, true>::Print(FILE *const f, const typename Abstrac
 
         unsigned char type = 0; // type
         std::fwrite(&type, sizeof(unsigned char), 1, f);
-        bool memType;
+        unsigned char memType;
         if (memRef->is_write) {
-            memType = true;
+            memType = 1;
         } else {
-            memType = false;
+            memType = 0;
         }
-        std::fwrite(&memType, sizeof(bool), 1, f);
-        std::fwrite(&(memRef->instr), sizeof(size_t), 1, f);
+        std::fwrite(&memType, sizeof(unsigned char), 1, f);
+        std::fwrite(&(memRef->data), sizeof(size_t), 1, f);
         std::fwrite(&(memRef->size), sizeof(unsigned char), 1, f);
         std::fwrite(&(memRef->symIdx), sizeof(size_t), 1, f);
 

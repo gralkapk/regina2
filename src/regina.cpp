@@ -161,9 +161,9 @@ static void event_exit(void) {
     drsym_exit();
     drmgr_exit();
 
-    FILE *lookupIO = std::fopen("regina.lookup.txt", "w");
+    FILE *lookupIO = std::fopen("regina.0.mmtrd.txt", "w");
     for (auto &e : symbol_lookup) {
-        std::string tmp = std::to_string(e.second)+"#"+ e.first + "\n";
+        std::string tmp = std::to_string(e.second)+"|"+ e.first + "\n";
         std::fwrite(tmp.c_str(), strlen(tmp.c_str()), 1, lookupIO);
     }
     std::fclose(lookupIO);
