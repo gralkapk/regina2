@@ -1,12 +1,13 @@
 #include <vector>
 #include <iostream>
-#include <string>
+#include <string.h>
 #include <sstream>
 #include <cstdio>
 #include <cstddef>
 #include <unordered_map>
 
 #include "dr_api.h"
+#include "dr_config.h"
 
 #include "drmgr.h"
 #include "drreg.h"
@@ -19,7 +20,7 @@
 #include "fileio.h"
 
 
-#define MAX_TRACE_STORAGE_SIZE 100000
+#define MAX_TRACE_STORAGE_SIZE 10000
 
 
 // Forward declarations
@@ -33,6 +34,11 @@ static dr_emit_flags_t event_bb_app2app(void *drcontext, void *tag, instrlist_t 
     bool for_trace, bool translating);
 static void cb_mem_ref();
 static void translate_addr(app_pc addr, std::string &sym_string);
+#ifdef WIN32
+static bool event_exception(void *drcontext, dr_exception_t *excpt);
+#else
+static dr_signal_action_t event_signal(void *drcontext, dr_siginfo_t *siginfo);
+#endif
 //---------------------
 
 
@@ -82,6 +88,10 @@ static void code_cache_exit(void) {
     dr_nonheap_free(code_cache, dr_page_size());
 }
 
+static bool event_exception(void *drcontext, dr_exception_t *excpt) {
+    return true;
+}
+
 
 /*
  * dr_client_main
@@ -114,6 +124,11 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     dr_register_exit_event(event_exit);
     if (!drmgr_register_thread_init_event(event_thread_init) ||
         !drmgr_register_thread_exit_event(event_thread_exit) ||
+#ifdef WIN32
+        !drmgr_register_exception_event(event_exception) ||
+#else
+        !drmgr_register_signal_event(event_signal) ||
+#endif
         !drmgr_register_bb_app2app_event(event_bb_app2app, &priority) ||
         !drmgr_register_bb_instrumentation_event(NULL, event_app_instruction, &priority) ||
         drreg_init(&ops) != DRREG_SUCCESS ||
@@ -152,6 +167,11 @@ static void event_exit(void) {
     // Unregister events
     if (!drmgr_unregister_thread_init_event(event_thread_init) ||
         !drmgr_unregister_thread_exit_event(event_thread_exit) ||
+#ifdef WIN32
+        !drmgr_unregister_exception_event(event_exception) ||
+#else
+        !drmgr_unregister_signal_event(event_signal) ||
+#endif
         !drmgr_unregister_bb_insertion_event(event_app_instruction)) {
         //REGINA_LOG_ERROR("Unable to unregister drmgr events\n");
     }
@@ -343,41 +363,41 @@ static void event_thread_exit(void *drcontext) {
 //------------------------------
 
 #define MAX_SYM_RESULT 256
-static void
-print_address(FILE *f, app_pc addr, const char *prefix) {
-    drsym_error_t symres;
-    drsym_info_t sym;
-    char name[MAX_SYM_RESULT];
-    char file[MAXIMUM_PATH];
-    module_data_t *data;
-    data = dr_lookup_module(addr);
-    if (data == NULL) {
-        fprintf(f, "%s %p ? ??:0\n", prefix, addr);
-        return;
-    }
-    sym.struct_size = sizeof(sym);
-    sym.name = name;
-    sym.name_size = MAX_SYM_RESULT;
-    sym.file = file;
-    sym.file_size = MAXIMUM_PATH;
-    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
-        DRSYM_DEFAULT_FLAGS);
-    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-        const char *modname = dr_module_preferred_name(data);
-        if (modname == NULL)
-            modname = "<noname>";
-        fprintf(f, "%s %p %s!%s+%p", prefix, addr,
-            modname, sym.name, addr - data->start - sym.start_offs);
-        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-            fprintf(f, " ??:0\n");
-        } else {
-            fprintf(f, " %s:%d + %d\n",
-                sym.file, sym.line, sym.line_offs);
-        }
-    } else
-        dr_fprintf(f, "%s %p ? ??:0\n", prefix, addr);
-    dr_free_module_data(data);
-}
+//static void
+//print_address(FILE *f, app_pc addr, const char *prefix) {
+//    drsym_error_t symres;
+//    drsym_info_t sym;
+//    char name[MAX_SYM_RESULT];
+//    char file[MAXIMUM_PATH];
+//    module_data_t *data;
+//    data = dr_lookup_module(addr);
+//    if (data == NULL) {
+//        fprintf(f, "%s %p ? ??:0\n", prefix, addr);
+//        return;
+//    }
+//    sym.struct_size = sizeof(sym);
+//    sym.name = name;
+//    sym.name_size = MAX_SYM_RESULT;
+//    sym.file = file;
+//    sym.file_size = MAXIMUM_PATH;
+//    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
+//        DRSYM_DEFAULT_FLAGS);
+//    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+//        const char *modname = dr_module_preferred_name(data);
+//        if (modname == NULL)
+//            modname = "<noname>";
+//        fprintf(f, "%s %p %s!%s+%p", prefix, addr,
+//            modname, sym.name, addr - data->start - sym.start_offs);
+//        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+//            fprintf(f, " ??:0\n");
+//        } else {
+//            fprintf(f, " %s:%d + %d\n",
+//                sym.file, sym.line, sym.line_offs);
+//        }
+//    } else
+//        dr_fprintf(f, "%s %p ? ??:0\n", prefix, addr);
+//    dr_free_module_data(data);
+//}
 
 
 static void translate_addr(app_pc addr, std::string &sym_string) {
@@ -405,12 +425,12 @@ static void translate_addr(app_pc addr, std::string &sym_string) {
         const char *modname = dr_module_preferred_name(data);
         if (modname == NULL)
             modname = "<noname>";
-        stringStream << modname << "#" << sym.name << "+" << addr - data->start - sym.start_offs;
-        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+        stringStream << modname << "#" << sym.name;// << "+" << addr - data->start - sym.start_offs;
+        /*if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
             stringStream << "##";
         } else {
             stringStream << "#" << sym.file << "#" << std::dec << sym.line << "+" << sym.line_offs;
-        }
+        }*/
     } else
         stringStream << "###";
     sym_string = stringStream.str();
@@ -758,7 +778,7 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
             SPILL_SLOT_1);
     } else if (instr_reads_memory(instr)) {
         int opcode = instr_get_opcode(instr);
-        if (std::strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
+        if (strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
             for (int i = 0; i < instr_num_srcs(instr); i++) {
                 if (opnd_is_memory_reference(instr_get_src(instr, i))) {
                     instrument_mem(drcontext, bb, instr, i, false);
@@ -769,7 +789,7 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
         }
     } else if (instr_writes_memory(instr)) {
         int opcode = instr_get_opcode(instr);
-        if (std::strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
+        if (strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
             for (int i = 0; i < instr_num_dsts(instr); i++) {
                 if (opnd_is_memory_reference(instr_get_dst(instr, i))) {
                     instrument_mem(drcontext, bb, instr, i, true);
