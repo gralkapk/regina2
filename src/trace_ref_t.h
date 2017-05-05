@@ -2,14 +2,16 @@
 #define REGINA_TRACE_REF_T_H_INCLUDED
 
 #include <vector>
+#include <stdint.h>
 
 #include "dr_api.h"
 
+#pragma pack(1) //< TODO Christoph ist sich net sicher
 typedef struct _trace_ref_t {
-    bool is_mem_ref;
-    bool is_write;
-    bool is_call;
-    bool is_ind;
+    int32_t is_mem_ref;
+    int32_t is_write;
+    int32_t is_call;
+    int32_t is_ind;
     void *data_addr;
     uint size;
     app_pc instr_addr;

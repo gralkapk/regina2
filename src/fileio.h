@@ -152,7 +152,7 @@ inline void FileIO<writeOnly, true>::Print(FILE *const f, const typename Abstrac
         if (memRef->is_write) {
             memType = 1;
         } else {
-            memType = 0;
+            memType = 2;
         }
         std::fwrite(&memType, sizeof(unsigned char), 1, f);
         std::fwrite(&(memRef->data), sizeof(size_t), 1, f);
