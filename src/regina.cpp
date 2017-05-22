@@ -778,7 +778,10 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
             SPILL_SLOT_1);
     } else if (instr_reads_memory(instr)) {
         int opcode = instr_get_opcode(instr);
-        if (strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
+        /*if (strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0)*/
+        if (!(strncmp(decode_opcode_name(opcode), "push", 4ul) == 0) &&
+            !(strncmp(decode_opcode_name(opcode), "pop", 3ul) == 0))
+        {
             for (int i = 0; i < instr_num_srcs(instr); i++) {
                 if (opnd_is_memory_reference(instr_get_src(instr, i))) {
                     instrument_mem(drcontext, bb, instr, i, false);
@@ -789,7 +792,10 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
         }
     } else if (instr_writes_memory(instr)) {
         int opcode = instr_get_opcode(instr);
-        if (strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0) {
+        /*if (strncmp(decode_opcode_name(opcode), "mov", 3ul) == 0)*/
+        if (!(strncmp(decode_opcode_name(opcode), "push", 4ul) == 0) &&
+            !(strncmp(decode_opcode_name(opcode), "pop", 3ul) == 0))
+        {
             for (int i = 0; i < instr_num_dsts(instr); i++) {
                 if (opnd_is_memory_reference(instr_get_dst(instr, i))) {
                     instrument_mem(drcontext, bb, instr, i, true);
