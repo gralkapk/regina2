@@ -86,7 +86,6 @@ void loop_blocking_on() {
 #pragma endregion kowarschik_weiss
 
 int main() {
-
     srand(42);
 
     memA = static_cast<memory_T*>(malloc(sizeof(memory_T) * N * N));
