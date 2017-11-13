@@ -52,3 +52,8 @@ else()
 	use_DynamoRIO_extension(regina drutil)
 	use_DynamoRIO_extension(regina drsyms)
 endif()
+
+# Add test targets.
+add_executable(test_dijkstra EXCLUDE_FROM_ALL test/dijkstra.cpp)
+add_executable(test_matrix EXCLUDE_FROM_ALL test/matrix.cpp)
+add_executable(test_sorting EXCLUDE_FROM_ALL test/sorting.cpp)
