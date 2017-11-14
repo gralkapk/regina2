@@ -45,4 +45,4 @@ Software Visualization (VISSOFT), 2017, p. 54 - 63
 
 ## License
 
-Licensed under a BSD license, just like [DynamoRIO](www.dynamorio.org).
+Licensed under a BSD license, just like [DynamoRIO](http://www.dynamorio.org/).
