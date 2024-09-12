@@ -75,6 +75,9 @@
 #include <string>
 #include <unordered_map>
 #include <sstream>
+#include <corecrt_io.h>
+
+#define MAX_SYM_RESULT 256
 
 /* Each mem_ref_t includes the type of reference (read or write),
  * the address referenced, and the size of the reference.
@@ -106,10 +109,8 @@ typedef struct {
     /* buf_end holds the negative value of real address of buffer end. */
     ptr_int_t buf_end;
     void* cache;
-    file_t log;
-#if OUTPUT_TEXT
     FILE* logf;
-#endif
+    uint64 threadID;
     uint64 num_refs;
 } per_thread_t;
 
@@ -125,9 +126,13 @@ static void* mutex; /* for multithread support */
 static uint64 global_num_refs; /* keep a global memory reference count */
 static int tls_index;
 
-static std::vector<file_t> delayed_files;
+//static std::vector<file_t> delayed_files;
 static std::unordered_map<std::string, size_t> symbol_lookup;
 static size_t symbol_idx = 0;
+static int file_idx = 0;
+static char symName[MAX_SYM_RESULT];
+static char modName[MAX_SYM_RESULT];
+static uint64 thread_idx = 0;
 
 static void
 event_exit(void);
@@ -201,8 +206,80 @@ dr_client_main(client_id_t id, int argc, const char* argv[]) {
 #endif
 }
 
-#define MAX_SYM_RESULT 256
+static void
+print_address(file_t f, app_pc addr, const char* prefix) {
+    drsym_error_t symres;
+    drsym_info_t sym;
+    char name[MAX_SYM_RESULT];
+    char file[MAXIMUM_PATH];
+    module_data_t* data;
+    data = dr_lookup_module(addr);
+    if (data == NULL) {
+        dr_fprintf(f, "%s " PFX " ? ??:0\n", prefix, addr);
+        return;
+    }
+    sym.struct_size = sizeof(sym);
+    sym.name = name;
+    sym.name_size = MAX_SYM_RESULT;
+    sym.file = file;
+    sym.file_size = MAXIMUM_PATH;
+    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
+        DRSYM_DEFAULT_FLAGS);
+    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+        const char* modname = dr_module_preferred_name(data);
+        if (modname == NULL)
+            modname = "<noname>";
+        dr_fprintf(f, "%s " PFX " %s!%s+" PIFX, prefix, addr, modname, sym.name,
+            addr - data->start - sym.start_offs);
+        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+            dr_fprintf(f, " ??:0\n");
+        } else {
+            dr_fprintf(f, " %s:%" UINT64_FORMAT_CODE "+" PIFX "\n", sym.file, sym.line,
+                sym.line_offs);
+        }
+    } else
+        dr_fprintf(f, "%s " PFX " ? ??:0\n", prefix, addr);
+    dr_free_module_data(data);
+}
+
+static void
+simple_address(app_pc addr, char* modname, char* symname) {
+    dr_fprintf(STDOUT, "fetch sym\n");
+    drsym_error_t symres;
+    drsym_info_t sym;
+    char name[MAX_SYM_RESULT];
+    char file[MAXIMUM_PATH];
+    module_data_t* data;
+    data = dr_lookup_module(addr);
+    if (data == NULL) {
+        dr_snprintf(modname, MAX_SYM_RESULT, "###");
+        dr_snprintf(symname, MAX_SYM_RESULT, "###");
+        return;
+    }
+    sym.struct_size = sizeof(sym);
+    sym.name = name;
+    sym.name_size = MAX_SYM_RESULT;
+    sym.file = file;
+    sym.file_size = MAXIMUM_PATH;
+    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
+        DRSYM_DEFAULT_FLAGS);
+    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+        const char* mod = dr_module_preferred_name(data);
+        if (mod == NULL) {
+            dr_snprintf(modname, MAX_SYM_RESULT, "noname");
+        } else {
+            dr_snprintf(modname, MAX_SYM_RESULT, "%s", mod);
+        }
+        dr_snprintf(sym.name, MAX_SYM_RESULT, "%s", sym.name);
+    } else {
+        dr_snprintf(modname, MAX_SYM_RESULT, "###");
+        dr_snprintf(symname, MAX_SYM_RESULT, "###");
+    }
+    dr_free_module_data(data);
+}
+
 static void translate_addr(app_pc addr, std::string& sym_string) {
+    dr_printf("test\n");
     std::ostringstream stringStream;
     stringStream << std::hex;
     drsym_error_t symres;
@@ -214,15 +291,19 @@ static void translate_addr(app_pc addr, std::string& sym_string) {
     if (data == NULL) {
         stringStream << "###";
         sym_string = stringStream.str();
+        dr_printf("failed to lookup module\n");
         return;
     }
+    dr_printf("test2\n");
     sym.struct_size = sizeof(sym);
     sym.name = name;
     sym.name_size = MAX_SYM_RESULT;
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
+    dr_printf("test2 %s\n", data->full_path);
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
         DRSYM_DEFAULT_FLAGS);
+    dr_printf("test3\n");
     if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
         const char* modname = dr_module_preferred_name(data);
         if (modname == NULL)
@@ -240,39 +321,42 @@ static void translate_addr(app_pc addr, std::string& sym_string) {
 }
 
 struct mem_dump {
-    unsigned char type = 0;
     unsigned char write;
-    size_t data;
+    uint64 data;
     unsigned char size;
-    size_t symIdx;
+    uint64 symIdx;
 };
 
 struct call_dump {
-    unsigned char type = 1;
     unsigned char subType;
-    size_t instr;
-    size_t target;
-    size_t instrSymIdx;
-    size_t targetSymIdx;
+    uint64 instr;
+    uint64 target;
+    uint64 instrSymIdx;
+    uint64 targetSymIdx;
 };
 
-static void process_file(file_t f, int file_idx) {
-    auto const fsz = dr_file_tell(f);
-    dr_file_seek(f, 0, DR_SEEK_SET);
+static void process_file(FILE* f, int file_idx) {
+    fseek(f, 0, SEEK_END);
+    auto const fsz = ftell(f);
+    fseek(f, 0, SEEK_SET);
     auto const num_refs = fsz / sizeof(mem_ref_t);
-    //dr_printf("Num Refs %d by %d size and %d type\n", num_refs, fsz, sizeof(mem_ref_t));
+    dr_printf("Num Refs %d by %d size and %d type\n", num_refs, fsz, sizeof(mem_ref_t));
     std::vector<mem_ref_t> ref_buffer(num_refs);
-    dr_read_file(f, ref_buffer.data(), num_refs * sizeof(mem_ref_t));
+    //dr_read_file(f, ref_buffer.data(), num_refs * sizeof(mem_ref_t));
+    fread(ref_buffer.data(), sizeof(mem_ref_t), num_refs, f);
 
     auto ofile = std::ofstream(std ::string("regina.") + std::to_string(file_idx) + std::string(".mmtrd"), std::ios::binary);
     for (auto const& el : ref_buffer) {
+        //dr_printf("Addr: %p\n", el.pc);
+        //print_address(STDOUT, el.pc, "MEM @\t");
         if (el.memRef) {
             mem_dump md = {};
-            md.type = 0;
+            unsigned char type = 0;
+            ofile.write(reinterpret_cast<const char*>(&type), sizeof(type));
             md.write = el.write ? 1 : 2;
             md.data = (size_t)el.addr;
             md.size = el.size;
-            std::string str;
+            /*std::string str;
             translate_addr(el.pc, str);
             auto it = symbol_lookup.find(str);
             if (it != symbol_lookup.end()) {
@@ -280,11 +364,13 @@ static void process_file(file_t f, int file_idx) {
             } else {
                 md.symIdx = symbol_idx;
                 symbol_lookup.insert(std::make_pair(str, symbol_idx++));
-            }
+            }*/
+            md.symIdx = 0;
             ofile.write(reinterpret_cast<const char*>(&md), sizeof(md));
         } else {
             call_dump cd = {};
-            cd.type = 1;
+            unsigned char type = 1;
+            ofile.write(reinterpret_cast<const char*>(&type), sizeof(type));
             if (el.call && el.ind) {
                 cd.subType = 1;
             } else if (el.call) {
@@ -293,7 +379,7 @@ static void process_file(file_t f, int file_idx) {
                 cd.subType = 2;
             }
             cd.instr = (size_t)el.pc;
-            std::string str;
+            /*std::string str;
             translate_addr(el.pc, str);
             auto it = symbol_lookup.find(str);
             if (it != symbol_lookup.end()) {
@@ -310,7 +396,9 @@ static void process_file(file_t f, int file_idx) {
             } else {
                 cd.targetSymIdx = symbol_idx;
                 symbol_lookup.insert(std::make_pair(str, symbol_idx++));
-            }
+            }*/
+            cd.instrSymIdx = 0;
+            cd.targetSymIdx = 0;
             ofile.write(reinterpret_cast<const char*>(&cd), sizeof(cd));
         }
     }
@@ -330,12 +418,12 @@ event_exit() {
     NULL_TERMINATE_BUFFER(msg);
     DISPLAY_STRING(msg);
 #endif /* SHOW_RESULTS */
-    int file_idx = 0;
+    /*int file_idx = 0;
     for (auto& f : delayed_files) {
         process_file(f, file_idx);
         log_file_close(f);
         ++file_idx;
-    }
+    }*/
 
     FILE* lookupIO = std::fopen("regina.0.mmtrd.txt", "w");
     for (auto& e : symbol_lookup) {
@@ -384,15 +472,19 @@ event_thread_init(void* drcontext) {
      * the same directory as our library. We could also pass
      * in a path as a client argument.
      */
-    data->log = log_file_open(client_id, drcontext, NULL /* using client lib path */, "memtrace",
-#ifndef WINDOWS
-        DR_FILE_CLOSE_ON_FORK |
-#endif
-            DR_FILE_ALLOW_LARGE);
+//    data->log = log_file_open(client_id, drcontext, NULL /* using client lib path */, "memtrace",
+//#ifndef WINDOWS
+//        DR_FILE_CLOSE_ON_FORK |
+//#endif
+//            DR_FILE_ALLOW_LARGE);
+//    data->logf = log_stream_from_file(data->log);
+    data->threadID = thread_idx++;
 #if OUTPUT_TEXT
-    data->logf = log_stream_from_file(data->log);
+    data->logf = fopen((std::string("regina.tmp.") + std::to_string(data->threadID) + std::string(".mmd")).c_str(), "w");
     fprintf(data->logf,
         "Format: <instr address>,<(r)ead/(w)rite>,<data size>,<data address>\n");
+#else
+    data->logf = fopen((std::string("regina.tmp.") + std::to_string(data->threadID) + std::string(".mmd")).c_str(), "wb");
 #endif
 }
 
@@ -408,8 +500,12 @@ event_thread_exit(void* drcontext) {
 #ifdef OUTPUT_TEXT
     log_stream_close(data->logf); /* closes fd too */
 #else
+    fclose(data->logf);
+    data->logf = fopen((std::string("regina.tmp.") + std::to_string(data->threadID) + std::string(".mmd")).c_str(), "rb");
+    process_file(data->logf, file_idx++);
+    fclose(data->logf);
     //log_file_close(data->log);
-    delayed_files.push_back(data->log);
+    //delayed_files.push_back(data->log);
 #endif
     dr_thread_free(drcontext, data->buf_base, MEM_BUF_SIZE);
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
@@ -454,7 +550,8 @@ static void at_call(app_pc instr_addr, app_pc target_addr) {
     mem_ref.ind = false;
     mem_ref.pc = instr_addr;
     mem_ref.target = target_addr;
-    dr_write_file(data->log, &mem_ref, sizeof(mem_ref));
+    //dr_write_file(data->log, &mem_ref, sizeof(mem_ref));
+    fwrite(&mem_ref, sizeof(mem_ref), 1, data->logf);
 #endif
 }
 
@@ -473,7 +570,8 @@ at_call_ind(app_pc instr_addr, app_pc target_addr) {
     mem_ref.ind = true;
     mem_ref.pc = instr_addr;
     mem_ref.target = target_addr;
-    dr_write_file(data->log, &mem_ref, sizeof(mem_ref));
+    //dr_write_file(data->log, &mem_ref, sizeof(mem_ref));
+    fwrite(&mem_ref, sizeof(mem_ref), 1, data->logf);
 #endif
 }
 
@@ -492,7 +590,8 @@ at_return(app_pc instr_addr, app_pc target_addr) {
     mem_ref.ind = false;
     mem_ref.pc = instr_addr;
     mem_ref.target = target_addr;
-    dr_write_file(data->log, &mem_ref, sizeof(mem_ref));
+    //dr_write_file(data->log, &mem_ref, sizeof(mem_ref));
+    fwrite(&mem_ref, sizeof(mem_ref), 1, data->logf);
 #endif
 }
 
@@ -573,7 +672,8 @@ memtrace(void* drcontext) {
         ++mem_ref;
     }
 #else
-    dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
+    //dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
+    fwrite(data->buf_base, (size_t)(data->buf_ptr - data->buf_base), 1, data->logf);
 #endif
 
     memset(data->buf_base, 0, MEM_BUF_SIZE);
