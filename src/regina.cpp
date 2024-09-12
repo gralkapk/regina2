@@ -87,6 +87,7 @@ typedef struct _mem_ref_t {
     bool write;
     bool call;
     bool ind;
+    uint32_t pad;
     void* addr;
     size_t size;
     app_pc pc;
@@ -279,7 +280,7 @@ simple_address(app_pc addr, char* modname, char* symname) {
 }
 
 static void translate_addr(app_pc addr, std::string& sym_string) {
-    dr_printf("test\n");
+    //dr_printf("test\n");
     std::ostringstream stringStream;
     stringStream << std::hex;
     drsym_error_t symres;
@@ -294,16 +295,16 @@ static void translate_addr(app_pc addr, std::string& sym_string) {
         dr_printf("failed to lookup module\n");
         return;
     }
-    dr_printf("test2\n");
+    //dr_printf("test2\n");
     sym.struct_size = sizeof(sym);
     sym.name = name;
     sym.name_size = MAX_SYM_RESULT;
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
-    dr_printf("test2 %s\n", data->full_path);
+    //dr_printf("test2 %s\n", data->full_path);
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
         DRSYM_DEFAULT_FLAGS);
-    dr_printf("test3\n");
+    //dr_printf("test3\n");
     if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
         const char* modname = dr_module_preferred_name(data);
         if (modname == NULL)
@@ -356,7 +357,7 @@ static void process_file(FILE* f, int file_idx) {
             md.write = el.write ? 1 : 2;
             md.data = (size_t)el.addr;
             md.size = el.size;
-            /*std::string str;
+            std::string str;
             translate_addr(el.pc, str);
             auto it = symbol_lookup.find(str);
             if (it != symbol_lookup.end()) {
@@ -364,9 +365,13 @@ static void process_file(FILE* f, int file_idx) {
             } else {
                 md.symIdx = symbol_idx;
                 symbol_lookup.insert(std::make_pair(str, symbol_idx++));
-            }*/
-            md.symIdx = 0;
-            ofile.write(reinterpret_cast<const char*>(&md), sizeof(md));
+            }
+            //md.symIdx = 0;
+            //ofile.write(reinterpret_cast<const char*>(&md), sizeof(md));
+            ofile.write(reinterpret_cast<const char*>(&md.write), sizeof(md.write));
+            ofile.write(reinterpret_cast<const char*>(&md.data), sizeof(md.data));
+            ofile.write(reinterpret_cast<const char*>(&md.size), sizeof(md.size));
+            ofile.write(reinterpret_cast<const char*>(&md.symIdx), sizeof(md.symIdx));
         } else {
             call_dump cd = {};
             unsigned char type = 1;
@@ -379,7 +384,7 @@ static void process_file(FILE* f, int file_idx) {
                 cd.subType = 2;
             }
             cd.instr = (size_t)el.pc;
-            /*std::string str;
+            std::string str;
             translate_addr(el.pc, str);
             auto it = symbol_lookup.find(str);
             if (it != symbol_lookup.end()) {
@@ -396,10 +401,15 @@ static void process_file(FILE* f, int file_idx) {
             } else {
                 cd.targetSymIdx = symbol_idx;
                 symbol_lookup.insert(std::make_pair(str, symbol_idx++));
-            }*/
-            cd.instrSymIdx = 0;
-            cd.targetSymIdx = 0;
-            ofile.write(reinterpret_cast<const char*>(&cd), sizeof(cd));
+            }
+            /*cd.instrSymIdx = 0;
+            cd.targetSymIdx = 0;*/
+            //ofile.write(reinterpret_cast<const char*>(&cd), sizeof(cd));
+            ofile.write(reinterpret_cast<const char*>(&cd.subType), sizeof(cd.subType));
+            ofile.write(reinterpret_cast<const char*>(&cd.instr), sizeof(cd.instr));
+            ofile.write(reinterpret_cast<const char*>(&cd.target), sizeof(cd.target));
+            ofile.write(reinterpret_cast<const char*>(&cd.instrSymIdx), sizeof(cd.instrSymIdx));
+            ofile.write(reinterpret_cast<const char*>(&cd.targetSymIdx), sizeof(cd.targetSymIdx));
         }
     }
     ofile.close();
