@@ -225,7 +225,7 @@ print_address(file_t f, app_pc addr, const char* prefix) {
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
-        DRSYM_DEFAULT_FLAGS);
+        DRSYM_DEMANGLE_PDB_TEMPLATES);
     if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
         const char* modname = dr_module_preferred_name(data);
         if (modname == NULL)
@@ -263,7 +263,7 @@ simple_address(app_pc addr, char* modname, char* symname) {
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
-        DRSYM_DEFAULT_FLAGS);
+        DRSYM_DEMANGLE_PDB_TEMPLATES);
     if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
         const char* mod = dr_module_preferred_name(data);
         if (mod == NULL) {
@@ -303,7 +303,7 @@ static void translate_addr(app_pc addr, std::string& sym_string) {
     sym.file_size = MAXIMUM_PATH;
     //dr_printf("test2 %s\n", data->full_path);
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
-        DRSYM_DEFAULT_FLAGS);
+        DRSYM_DEMANGLE_PDB_TEMPLATES);
     //dr_printf("test3\n");
     if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
         const char* modname = dr_module_preferred_name(data);
