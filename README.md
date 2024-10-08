@@ -7,7 +7,7 @@ REGisters and INstructions Analyzer (version 2) is an instrumenting profiler.
 Clone the repository:
 
 ```
-git clone git://github.com/UniStuttgart-VISUS/regina.git
+git clone git://github.com/gralkapk/regina2.git
 ```
 
 Build on Windows with RelWithDebInfo.
