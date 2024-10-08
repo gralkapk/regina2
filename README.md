@@ -1,6 +1,6 @@
-# REGINA
+# REGINA2
 
-REGisters and INstructions Analyzer is an instrumenting profiler.
+REGisters and INstructions Analyzer (version 2) is an instrumenting profiler.
 
 ## Installation
 
